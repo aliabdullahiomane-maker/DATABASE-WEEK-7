@@ -721,3 +721,199 @@ IDENTIFIED BY 'replace-with-a-strong-private-password';
 ```
 
 Do not commit database passwords to GitHub or include real passwords in a public repository.
+
+# 6. Flyway Versioned Migrations
+
+## 6.1 Migration File Structure
+
+The database changes are organized into versioned Flyway migration files:
+
+```text
+migrations/
+├── V1__core_tables.sql
+├── V2__audit_log.sql
+└── V3__categories.sql
+```
+
+Flyway applies versioned migrations in order and records their execution in the `flyway_schema_history` table.
+
+---
+
+## 6.2 V1__core_tables.sql
+
+This migration creates the core `student` table.
+
+```sql
+USE sales;
+
+CREATE TABLE IF NOT EXISTS student (
+    id INT PRIMARY KEY,
+    fullName VARCHAR(100),
+    age INT
+);
+```
+
+---
+
+## 6.3 V2__audit_log.sql
+
+This migration creates the JSON audit table and the three audit triggers.
+
+```sql
+USE sales;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tbl VARCHAR(128) NOT NULL,
+    op VARCHAR(20) NOT NULL,
+    old_row JSON NULL,
+    new_row JSON NULL,
+    changed_by VARCHAR(255) NOT NULL,
+    changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+The audit triggers were created using the MySQL client delimiter syntax:
+
+```sql
+DELIMITER $$
+
+CREATE TRIGGER trg_student_insert_audit
+AFTER INSERT ON student
+FOR EACH ROW
+BEGIN
+    INSERT INTO audit_log (
+        tbl,
+        op,
+        old_row,
+        new_row,
+        changed_by
+    )
+    VALUES (
+        'student',
+        'INSERT',
+        NULL,
+        JSON_OBJECT(
+            'id', NEW.id,
+            'fullName', NEW.fullName,
+            'age', NEW.age
+        ),
+        CURRENT_USER()
+    );
+END$$
+
+CREATE TRIGGER trg_student_update_audit
+AFTER UPDATE ON student
+FOR EACH ROW
+BEGIN
+    INSERT INTO audit_log (
+        tbl,
+        op,
+        old_row,
+        new_row,
+        changed_by
+    )
+    VALUES (
+        'student',
+        'UPDATE',
+        JSON_OBJECT(
+            'id', OLD.id,
+            'fullName', OLD.fullName,
+            'age', OLD.age
+        ),
+        JSON_OBJECT(
+            'id', NEW.id,
+            'fullName', NEW.fullName,
+            'age', NEW.age
+        ),
+        CURRENT_USER()
+    );
+END$$
+
+CREATE TRIGGER trg_student_delete_audit
+AFTER DELETE ON student
+FOR EACH ROW
+BEGIN
+    INSERT INTO audit_log (
+        tbl,
+        op,
+        old_row,
+        new_row,
+        changed_by
+    )
+    VALUES (
+        'student',
+        'DELETE',
+        JSON_OBJECT(
+            'id', OLD.id,
+            'fullName', OLD.fullName,
+            'age', OLD.age
+        ),
+        NULL,
+        CURRENT_USER()
+    );
+END$$
+
+DELIMITER ;
+```
+
+> Note: `DELIMITER` is understood by the MySQL command-line client. When running these statements through Flyway, configure Flyway's MySQL delimiter handling according to the installed Flyway version, or keep the trigger definitions in a Flyway-compatible SQL migration format.
+
+---
+
+## 6.4 V3__categories.sql
+
+This migration creates the self-referencing category table.
+
+```sql
+USE sales;
+
+CREATE TABLE IF NOT EXISTS categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    parent_id INT NULL,
+    CONSTRAINT fk_categories_parent
+        FOREIGN KEY (parent_id)
+        REFERENCES categories(id)
+);
+```
+
+---
+
+## 6.5 Flyway Commands
+
+The Flyway connection URL is:
+
+```text
+jdbc:mysql://localhost:3306/sales
+```
+
+The migrations can be applied from Windows PowerShell with:
+
+```powershell
+flyway `
+  -url="jdbc:mysql://localhost:3306/sales" `
+  -user="root" `
+  -locations="filesystem:.\migrations" `
+  migrate
+```
+
+Migration status can be inspected with:
+
+```powershell
+flyway `
+  -url="jdbc:mysql://localhost:3306/sales" `
+  -user="root" `
+  -locations="filesystem:.\migrations" `
+  info
+```
+
+The expected migration order is:
+
+```text
+V1__core_tables.sql
+V2__audit_log.sql
+V3__categories.sql
+```
+
+A successful Flyway run should show each migration with a successful status.
